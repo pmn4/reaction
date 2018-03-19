@@ -34,6 +34,8 @@ export function getAddress(options = {}) {
 }
 
 export function createAccountFactory() {
+  // there are many places in code which require that an Account's _id be equal
+  // to the User's _id (and therefore equal to userId)
   Factory.define("account", Accounts, {
     shopId: getShop()._id,
     userId: getUser()._id,
