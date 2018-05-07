@@ -474,6 +474,15 @@ export default {
   },
 
   /**
+   * @name isShopPrimary
+   * @summary Whether the current shop is the Primary Shop (vs a Merchant Shop)
+   * @return {Boolean}
+   */
+  isShopPrimary() {
+    return this.getShopId() === this.getPrimaryShopId();
+  },
+
+  /**
    * getShopName
    * @summary gets name of shop by provided shopId, or current active shop if shopId is not provided
    * @param {String} providedShopID - shopId of shop to return name of
