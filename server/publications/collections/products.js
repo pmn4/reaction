@@ -154,6 +154,37 @@ function filterProducts(productFilters) {
     return false;
   }
 
+  // Active shop
+  const shopId = Reaction.getShopId();
+  const primaryShopId = Reaction.getPrimaryShopId();
+
+  // Don't publish if we're missing an active or primary shopId
+  if (!shopId || !primaryShopId) {
+    return this.ready();
+  }
+
+  let activeShopIds;
+  // if the current shop is the primary shop, get products from all shops
+  // otherwise, only list products from _this_ shop.
+  if (shopId === primaryShopId) {
+    activeShopIds = Shops.find({
+      $or: [
+        { "workflow.status": "active" },
+        { _id: primaryShopId }
+      ]
+    }, {
+      fields: {
+        _id: 1
+      }
+    }).fetch().map((activeShop) => activeShop._id);
+  } else {
+    activeShopIds = [shopId];
+  }
+
+  if (!activeShopIds.length) {
+    return false;
+  }
+
   const shopIdsOrSlugs = productFilters && productFilters.shops;
 
   if (shopIdsOrSlugs) {
@@ -165,11 +196,15 @@ function filterProducts(productFilters) {
       }, {
         slug: { $in: shopIdsOrSlugs }
       }]
+    }, {
+      fields: {
+        _id: 1
+      }
     }).map((shop) => shop._id);
 
     // If we found shops, update the productFilters
     if (shopIds) {
-      productFilters.shops = shopIds;
+      activeShopIds = _.intersection(activeShopIds, shopIds);
     } else {
       return false;
     }
@@ -182,16 +217,14 @@ function filterProducts(productFilters) {
     isVisible: true // by default, only lookup visible products
   };
 
-  if (productFilters) {
-    // handle multiple shops
-    if (productFilters.shops) {
-      _.extend(selector, {
-        shopId: {
-          $in: productFilters.shops
-        }
-      });
-    }
+  // handle multiple shops
+  if (activeShopIds) {
+    selector.shopId = {
+      $in: activeShopIds
+    };
+  }
 
+  if (productFilters) {
     // filter by tags
     if (productFilters.tags) {
       _.extend(selector, {
@@ -326,47 +359,23 @@ Meteor.publish("Products", function (productScrollLimit = 24, productFilters, so
 
   // TODO: Consider publishing the non-admin publication if a user is not in "edit mode" to see what is published
 
-  // Active shop
-  const shopId = Reaction.getShopId();
-  const primaryShopId = Reaction.getPrimaryShopId();
-
-  // Get a list of shopIds that this user has "createProduct" permissions for (owner permission is checked by default)
-  const userAdminShopIds = Reaction.getShopsWithRoles(["createProduct"], this.userId);
-
-  // Don't publish if we're missing an active or primary shopId
-  if (!shopId || !primaryShopId) {
-    return this.ready();
-  }
-
-  // Get active shop id's to use for filtering
-  const activeShopsIds = Shops.find({
-    $or: [
-      { "workflow.status": "active" },
-      { _id: primaryShopId }
-    ]
-  }, {
-    fields: {
-      _id: 1
-    }
-  }).fetch().map((activeShop) => activeShop._id);
-
   const selector = filterProducts(productFilters);
 
   if (selector === false) {
     return this.ready();
   }
 
+  // Get a list of shopIds that this user has "createProduct" permissions for (owner permission is checked by default)
+  const userAdminShopIds = Reaction.getShopsWithRoles(["createProduct"], this.userId);
+
   // We publish an admin version of this publication to admins of products who are in "Edit Mode"
   // Authorized content curators for shops get special publication of the product
   // with all relevant revisions all is one package
   // userAdminShopIds is a list of shopIds that the user has createProduct or owner access for
-  if (editMode && userAdminShopIds && Array.isArray(userAdminShopIds) && userAdminShopIds.length > 0) {
-    selector.isVisible = {
-      $in: [true, false, null, undefined]
-    };
-    selector.shopId = {
-      $in: userAdminShopIds
-    };
+  if (editMode && Array.isArray(userAdminShopIds) && userAdminShopIds.length > 0) {
+    delete selector.isVisible; // in edit mode, you should see all products
+
+    selector.shopId.$in = _.intersection(selector.shopId.$in, userAdminShopIds);
 
     // Get _ids of top-level products
     const productIds = Products.find(selector, {
@@ -377,7 +386,6 @@ Meteor.publish("Products", function (productScrollLimit = 24, productFilters, so
         _id: 1
       }
     }).map((product) => product._id);
-
 
     const productSelectorWithVariants = extendSelectorWithVariants("Products", selector, productFilters, productIds);
 
@@ -448,7 +456,7 @@ Meteor.publish("Products", function (productScrollLimit = 24, productFilters, so
     }
   }).map((product) => product._id);
 
-  let newSelector = _.omit(selector, ["hashtags", "ancestors"]);
+  const newSelector = _.omit(selector, ["hashtags", "ancestors"]);
 
   // Remove hashtag filter from selector (hashtags are not applied to variants, we need to get variants)
   if (productFilters && Object.keys(productFilters).length === 0 && productFilters.constructor === Object) {
@@ -511,14 +519,6 @@ Meteor.publish("Products", function (productScrollLimit = 24, productFilters, so
       }]
     });
   }
-
-  // Adjust the selector to include only active shops
-  newSelector = {
-    ...newSelector,
-    shopId: {
-      $in: activeShopsIds
-    }
-  };
 
   // Returning Complete product tree for top level products to avoid sold out warning.
   return Products.find(newSelector, {

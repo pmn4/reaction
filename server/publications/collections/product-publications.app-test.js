@@ -3,6 +3,7 @@
 import Random from "@reactioncommerce/random";
 import { expect } from "meteor/practicalmeteor:chai";
 import { sinon } from "meteor/practicalmeteor:sinon";
+import { Factory } from "meteor/dburles:factory";
 import { Roles } from "meteor/alanning:roles";
 import { createActiveShop } from "/server/imports/fixtures/shops";
 import { Reaction } from "/server/api";
@@ -14,18 +15,39 @@ import { RevisionApi } from "/imports/plugins/core/revisions/lib/api/revisions";
 Fixtures();
 
 describe("Publication", function () {
-  const shopId = Random.id();
-  const primaryShopId = Random.id();
+  let shopId;
+  let merchantShopId;
+  let primaryShopId;
+  let inactiveMerchantShopId;
   let sandbox;
 
-  beforeEach(function () {
-    Collections.Shops.remove({});
+  let merchantShop1ProductIds;
+  let merchantShop1VisibleProductIds;
+  let activeShopProductIds;
+  let activeShopVisibleProductIds;
+  let activeMerchantProductIds;
 
-    createActiveShop({ _id: shopId, shopType: "merchant" });
-    createActiveShop({ _id: primaryShopId, shopType: "primary" });
+  const productScrollLimit = 24;
+
+  beforeEach(function () {
+    shopId = Random.id();
+    merchantShopId = Random.id();
+    primaryShopId = Random.id();
 
     sandbox = sinon.sandbox.create();
     sandbox.stub(RevisionApi, "isRevisionControlEnabled", () => true);
+    sandbox.stub(Reaction, "getPrimaryShopId", () => primaryShopId);
+
+    Collections.Shops.remove({});
+
+    // muting some shop creation hook behavior (to keep output clean)
+    sandbox.stub(Reaction, "setShopName");
+    sandbox.stub(Reaction, "setDomain");
+
+    createActiveShop({ _id: shopId, shopType: "merchant" });
+    createActiveShop({ _id: merchantShopId, shopType: "merchant" });
+    createActiveShop({ _id: primaryShopId, shopType: "primary" });
+    Factory.create("shop", { _id: inactiveMerchantShopId, shopType: "merchant" });
   });
 
   afterEach(function () {
@@ -51,7 +73,7 @@ describe("Publication", function () {
       Collections.Products.remove({});
 
       // a product with price range A, and not visible
-      Collections.Products.insert({
+      const productId1 = Collections.Products.insert({
         ancestors: [],
         title: "My Little Pony",
         shopId,
@@ -63,7 +85,7 @@ describe("Publication", function () {
         isBackorder: false
       });
       // a product with price range B, and visible
-      Collections.Products.insert({
+      const productId2 = Collections.Products.insert({
         ancestors: [],
         title: "Shopkins - Peachy",
         shopId,
@@ -75,7 +97,7 @@ describe("Publication", function () {
         isBackorder: false
       });
       // a product with price range A, and visible
-      Collections.Products.insert({
+      const productId3 = Collections.Products.insert({
         ancestors: [],
         title: "Fresh Tomatoes",
         shopId,
@@ -86,8 +108,20 @@ describe("Publication", function () {
         isSoldOut: false,
         isBackorder: false
       });
-
-      Collections.Products.insert({
+      // a product for an unrelated marketplace shop
+      const productId4 = Collections.Products.insert({
+        ancestors: [],
+        title: "Teddy Ruxpin",
+        shopId: merchantShopId,
+        type: "simple",
+        price: priceRangeA,
+        isVisible: true,
+        isLowQuantity: false,
+        isSoldOut: false,
+        isBackorder: false
+      });
+      // a product for the Primary Shop
+      const productId5 = Collections.Products.insert({
         ancestors: [],
         title: "Garbage Pail Kids",
         shopId: primaryShopId,
@@ -98,51 +132,71 @@ describe("Publication", function () {
         isSoldOut: false,
         isBackorder: false
       });
+      // a product for an inactive Merchant Shop
+      // this product is here to guard against false-positive test results
+      Collections.Products.insert({
+        ancestors: [],
+        title: "Lite Bright",
+        shopId: inactiveMerchantShopId,
+        type: "simple",
+        price: priceRangeA,
+        isVisible: true,
+        isLowQuantity: false,
+        isSoldOut: false,
+        isBackorder: false
+      });
+
+      // helper arrays for writing expecations in tests
+      merchantShop1ProductIds = [productId1, productId2, productId3];
+      merchantShop1VisibleProductIds = [productId2, productId3];
+      activeShopProductIds = [productId1, productId2, productId3, productId4, productId5];
+      activeShopVisibleProductIds = [productId2, productId3, productId4, productId5];
+      activeMerchantProductIds = [productId2, productId3, productId4];
 
       collector = new PublicationCollector({ userId: Random.id() });
     });
 
     describe("Products", function () {
-      it("should return all products to admins", function (done) {
+      it("should return all products from active shops to admins in the Primary Shop", function (done) {
+        // setup
+        sandbox.stub(Reaction, "getShopId", () => primaryShopId);
+        sandbox.stub(Roles, "userIsInRole", () => true);
+        sandbox.stub(Reaction, "hasPermission", () => true);
+        sandbox.stub(Reaction, "getShopsWithRoles", () => [shopId, merchantShopId, primaryShopId]);
+
+        collector.collect("Products", 24, undefined, {}, (collections) => {
+          const productIds = collections.Products.map((p) => p._id);
+
+          expect(productIds).to.have.members(activeShopProductIds);
+        }).then(() => done(/* empty */), done);
+      });
+
+      it("should return all products from the current shop to admins in a Merchant Shop", function (done) {
         // setup
         sandbox.stub(Reaction, "getShopId", () => shopId);
         sandbox.stub(Roles, "userIsInRole", () => true);
         sandbox.stub(Reaction, "hasPermission", () => true);
-        sandbox.stub(Reaction, "getShopsWithRoles", () => [shopId, primaryShopId]);
-
-        let isDone = false;
+        sandbox.stub(Reaction, "getShopsWithRoles", () => [shopId, merchantShopId, primaryShopId]);
 
         collector.collect("Products", 24, undefined, {}, (collections) => {
-          const products = collections.Products;
+          const productIds = collections.Products.map((p) => p._id);
 
-          expect(products.length).to.equal(4);
-
-          if (!isDone) {
-            isDone = true;
-            done();
-          }
-        });
+          expect(productIds).to.have.members(merchantShop1ProductIds);
+        }).then(() => done(/* empty */), done);
       });
 
       it("returns products from only the shops for which an admin has createProduct Role", function (done) {
         // setup
-        sandbox.stub(Reaction, "getShopId", () => shopId);
+        sandbox.stub(Reaction, "getShopId", () => primaryShopId);
         sandbox.stub(Roles, "userIsInRole", () => true);
         sandbox.stub(Reaction, "hasPermission", () => true);
-        sandbox.stub(Reaction, "getShopsWithRoles", () => [primaryShopId]);
-
-        let isDone = false;
+        sandbox.stub(Reaction, "getShopsWithRoles", () => [shopId]);
 
         collector.collect("Products", 24, undefined, {}, (collections) => {
-          const products = collections.Products;
+          const productIds = collections.Products.map((p) => p._id);
 
-          expect(products.length).to.equal(1);
-
-          if (!isDone) {
-            isDone = true;
-            done();
-          }
-        });
+          expect(productIds).to.have.members(merchantShop1ProductIds);
+        }).then(() => done(/* empty */), done);
       });
 
       it("should have an expected product title", function (done) {
@@ -152,67 +206,46 @@ describe("Publication", function () {
         sandbox.stub(Reaction, "hasPermission", () => true);
         sandbox.stub(Reaction, "getShopsWithRoles", () => [shopId]);
 
-        let isDone = false;
-
         collector.collect("Products", 24, undefined, {}, (collections) => {
           const products = collections.Products;
           const data = products[1];
           const expectedTitles = ["My Little Pony", "Shopkins - Peachy"];
 
           expect(expectedTitles.some((title) => title === data.title)).to.be.ok;
-
-          if (!isDone) {
-            isDone = true;
-            done();
-          }
-        });
+        }).then(() => done(/* empty */), done);
       });
 
       it("should return only visible products to visitors", function (done) {
         sandbox.stub(Reaction, "getShopId", () => shopId);
         sandbox.stub(Roles, "userIsInRole", () => false);
 
-        let isDone = false;
-
         collector.collect("Products", 24, undefined, {}, (collections) => {
           const products = collections.Products;
           const data = products[0];
           const expectedTitles = ["Fresh Tomatoes", "Shopkins - Peachy"];
 
-          // the correct expectation should be 2, but there is an issue where
-          // products not owned by this shop are appearing in results.
-          // this will be addressed in a PR shortly.
-          // expect(products.length).to.equal(2);
-          expect(products.length).to.equal(3);
+          expect(products.length).to.equal(2);
           expect(expectedTitles.some((title) => title === data.title)).to.be.ok;
-
-          if (isDone === false) {
-            isDone = true;
-            done();
-          }
-        });
+        }).then(() => done(/* empty */), done);
       });
 
       it("should return only products matching query", function (done) {
-        const productScrollLimit = 24;
         const filters = { query: "Shopkins" };
+
         sandbox.stub(Reaction, "getShopId", () => shopId);
         sandbox.stub(Roles, "userIsInRole", () => false);
-
 
         collector.collect("Products", productScrollLimit, filters, {}, (collections) => {
           const products = collections.Products;
           const data = products[0];
 
           expect(data.title).to.equal("Shopkins - Peachy");
-
-          done();
-        });
+        }).then(() => done(/* empty */), done);
       });
 
       it("should not return products not matching query", function (done) {
-        const productScrollLimit = 24;
         const filters = { query: "random search" };
+
         sandbox.stub(Reaction, "getShopId", () => shopId);
         sandbox.stub(Roles, "userIsInRole", () => false);
 
@@ -220,14 +253,12 @@ describe("Publication", function () {
           const products = collections.Products;
 
           expect(products.length).to.equal(0);
-
-          done();
-        });
+        }).then(() => done(/* empty */), done);
       });
 
       it("should return products in price.min query", function (done) {
-        const productScrollLimit = 24;
         const filters = { "price.min": "2.00" };
+
         sandbox.stub(Reaction, "getShopId", () => shopId);
         sandbox.stub(Roles, "userIsInRole", () => false);
 
@@ -235,48 +266,38 @@ describe("Publication", function () {
           const products = collections.Products;
 
           expect(products.length).to.equal(1);
-
-          done();
-        });
+        }).then(() => done(/* empty */), done);
       });
 
       it("should return products in price.max query", function (done) {
-        const productScrollLimit = 24;
         const filters = { "price.max": "24.00" };
+
         sandbox.stub(Reaction, "getShopId", () => shopId);
         sandbox.stub(Roles, "userIsInRole", () => false);
 
         collector.collect("Products", productScrollLimit, filters, {}, (collections) => {
           const products = collections.Products;
 
-          expect(products.length).to.equal(3);
-
-          done();
-        });
+          expect(products.length).to.equal(2);
+        }).then(() => done(/* empty */), done);
       });
 
       it("should return products in price.min - price.max range query", function (done) {
-        const productScrollLimit = 24;
         const filters = { "price.min": "12.00", "price.max": "19.98" };
+
         sandbox.stub(Reaction, "getShopId", () => shopId);
         sandbox.stub(Roles, "userIsInRole", () => false);
 
         collector.collect("Products", productScrollLimit, filters, {}, (collections) => {
           const products = collections.Products;
 
-          // the correct expectation should be 2, but there is an issue where
-          // products not owned by this shop are appearing in results.
-          // this will be addressed in a PR shortly.
-          // expect(products.length).to.equal(2);
-          expect(products.length).to.equal(3);
-
-          done();
-        });
+          expect(products.length).to.equal(2);
+        }).then(() => done(/* empty */), done);
       });
 
       it("should return products where value is in price set query", function (done) {
-        const productScrollLimit = 24;
         const filters = { "price.min": "13.00", "price.max": "24.00" };
+
         sandbox.stub(Reaction, "getShopId", () => shopId);
         sandbox.stub(Roles, "userIsInRole", () => false);
 
@@ -284,34 +305,96 @@ describe("Publication", function () {
           const products = collections.Products;
 
           expect(products.length).to.equal(1);
-
-          done();
-        });
+        }).then(() => done(/* empty */), done);
       });
 
       it("should return products from all shops when multiple shops are provided", function (done) {
-        const filters = { shops: [shopId] };
-        const productScrollLimit = 24;
-        sandbox.stub(Reaction, "getCurrentShop", function () { return { _id: "123" }; });
-        sandbox.stub(Roles, "userIsInRole", () => true);
-        sandbox.stub(Reaction, "hasPermission", () => true);
-        sandbox.stub(Reaction, "getShopsWithRoles", () => [shopId]);
+        const filters = { shops: [shopId, merchantShopId] };
 
-        let isDone = false;
+        sandbox.stub(Reaction, "getShopId", () => primaryShopId);
+        sandbox.stub(Roles, "userIsInRole", () => false);
 
         collector.collect("Products", productScrollLimit, filters, {}, (collections) => {
-          const products = collections.Products;
-          expect(products.length).to.equal(3);
+          const productIds = collections.Products.map((p) => p._id);
 
-          const data = products[1];
-          expect(["My Little Pony", "Shopkins - Peachy"].some((title) => title === data.title)).to.be.ok;
+          expect(productIds).to.have.members(activeMerchantProductIds);
+        }).then(() => done(/* empty */), done);
+      });
+    });
 
-          if (!isDone) {
-            isDone = true;
-            done();
-          }
+    describe("Products/grid", function () {
+      beforeEach(function () {
+        Collections.Catalog.remove({});
+      });
+
+      describe("Catalog conditions", function () {
+        it("returns nothing when the Catalog is empty", function (done) {
+          sandbox.stub(Reaction, "getShopId", () => shopId);
+
+          collector.collect("Products/grid", (collections) => {
+            const productIds = collections.Catalog.map((p) => p._id);
+
+            expect(productIds).to.be.empty;
+          }).then(() => done(/* empty */), done);
+        });
+
+        it("returns products from the Catalog", function (done) {
+          sandbox.stub(Reaction, "getShopId", () => shopId);
+
+          publishProductsToCatalog();
+
+          collector.collect("Products/grid", (collections) => {
+            const productIds = collections.Catalog.map((p) => p._id);
+
+            expect(productIds).to.not.be.empty;
+          }).then(() => done(/* empty */), done);
         });
       });
+
+      describe("Shop conditions", function () {
+        beforeEach(function () {
+          publishProductsToCatalog();
+        });
+
+        it("returns products from the active shop", function (done) {
+          sandbox.stub(Reaction, "getShopId", () => shopId);
+
+          collector.collect("Products/grid", (collections) => {
+            const productIds = collections.Catalog.map((p) => p._id);
+
+            expect(productIds).to.have.members(merchantShop1VisibleProductIds);
+          }).then(() => done(/* empty */), done);
+        });
+
+        it("returns all visible products from all active shops when the Primary Shop is active", function (done) {
+          sandbox.stub(Reaction, "getShopId", () => primaryShopId);
+
+          collector.collect("Products/grid", (collections) => {
+            const productIds = collections.Catalog.map((p) => p._id);
+
+            expect(productIds).to.have.members(activeShopVisibleProductIds);
+          }).then(() => done(/* empty */), done);
+        });
+
+        it("returns products from all shops when the Primary Shop is active, filtered by shop id", function (done) {
+          const filters = { shops: [shopId, merchantShopId] };
+
+          sandbox.stub(Reaction, "getShopId", () => primaryShopId);
+
+          collector.collect("Products/grid", 24, filters, (collections) => {
+            const productIds = collections.Catalog.map((p) => p._id);
+
+            expect(productIds).to.have.members(activeMerchantProductIds);
+          }).then(() => done(/* empty */), done);
+        });
+      });
+
+      function publishProductsToCatalog() {
+        Collections.Products
+          .find({})
+          .fetch()
+          .forEach((product) => Collections.Catalog.insert(product));
+      }
     });
 
     describe("Product", function () {
@@ -326,9 +409,7 @@ describe("Publication", function () {
           const data = products[0];
 
           expect(data.title).to.equal(product.title);
-
-          done();
-        });
+        }).then(() => done(/* empty */), done);
       });
 
       it("should not return a product if handle does not match exactly", function (done) {
@@ -341,15 +422,12 @@ describe("Publication", function () {
           } else {
             expect(products).to.be.undefined;
           }
-          done();
-        });
+        }).then(() => done(/* empty */), done);
       });
 
       it("should not return a product based on exact handle match if it isn't visible", function (done) {
         sandbox.stub(Reaction, "getShopId", () => shopId);
         sandbox.stub(Roles, "userIsInRole", () => false);
-
-        let isDone = false;
 
         collector.collect("Product", "my-little-pony", (collections) => {
           const products = collections.Products;
@@ -358,12 +436,7 @@ describe("Publication", function () {
           } else {
             expect(products).to.be.undefined;
           }
-
-          if (!isDone) {
-            isDone = true;
-            done();
-          }
-        });
+        }).then(() => done(/* empty */), done);
       });
 
       it("should return a product to admin based on a exact handle match even if it isn't visible", function (done) {
@@ -371,19 +444,12 @@ describe("Publication", function () {
         sandbox.stub(Roles, "userIsInRole", () => true);
         sandbox.stub(Reaction, "hasPermission", () => true);
 
-        let isDone = false;
-
         collector.collect("Product", "my-little-pony", (collections) => {
           const products = collections.Products;
           const data = products[0];
 
           expect(data.title).to.equal("My Little Pony");
-
-          if (!isDone) {
-            isDone = true;
-            done();
-          }
-        });
+        }).then(() => done(/* empty */), done);
       });
     });
   });
