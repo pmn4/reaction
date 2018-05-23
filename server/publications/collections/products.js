@@ -144,23 +144,14 @@ function extendSelectorWithVariants(collectionName, selector, productFilters, pr
   return newSelector;
 }
 
-function filterProducts(productFilters) {
-  // if there are filter/params that don't match the schema
-  // validate, catch except but return no results
-  try {
-    if (productFilters) filters.validate(productFilters);
-  } catch (e) {
-    Logger.debug(e, "Invalid Product Filters");
-    return false;
-  }
-
+function applyShopsFilter(selector, shopIdsOrSlugs) {
   // Active shop
   const shopId = Reaction.getShopId();
   const primaryShopId = Reaction.getPrimaryShopId();
 
   // Don't publish if we're missing an active or primary shopId
   if (!shopId || !primaryShopId) {
-    return this.ready();
+    return false;
   }
 
   let activeShopIds;
@@ -185,8 +176,6 @@ function filterProducts(productFilters) {
     return false;
   }
 
-  const shopIdsOrSlugs = productFilters && productFilters.shops;
-
   if (shopIdsOrSlugs) {
     // Get all shopIds associated with the slug or Id
     const shopIds = Shops.find({
@@ -202,27 +191,38 @@ function filterProducts(productFilters) {
       }
     }).map((shop) => shop._id);
 
-    // If we found shops, update the productFilters
-    if (shopIds) {
-      activeShopIds = _.intersection(activeShopIds, shopIds);
-    } else {
-      return false;
-    }
+    activeShopIds = _.intersection(activeShopIds, shopIds);
+  }
+
+  // handle multiple shops
+  if (activeShopIds) {
+    return Object.assign({ ...selector }, { shopId: { $in: activeShopIds } });
+  }
+
+  return selector;
+}
+
+function filterProducts(productFilters) {
+  // if there are filter/params that don't match the schema
+  // validate, catch except but return no results
+  try {
+    if (productFilters) filters.validate(productFilters);
+  } catch (e) {
+    Logger.debug(e, "Invalid Product Filters");
+    return false;
   }
 
   // Init default selector - Everyone can see products that fit this selector
-  const selector = {
+  const baseSelector = {
     ancestors: [], // Lookup top-level products
     isDeleted: { $ne: true }, // by default, we don't publish deleted products
     isVisible: true // by default, only lookup visible products
   };
 
-  // handle multiple shops
-  if (activeShopIds) {
-    selector.shopId = {
-      $in: activeShopIds
-    };
-  }
+  const shopIdsOrSlugs = productFilters && productFilters.shops;
+  const selector = applyShopsFilter(baseSelector, shopIdsOrSlugs);
+
+  if (!selector) { return false; }
 
   if (productFilters) {
     // filter by tags
@@ -540,41 +540,18 @@ function filterCatalogItems(catalogFilters) {
     return false;
   }
 
-  const shopIdsOrSlugs = catalogFilters && catalogFilters.shopIdsOrSlugs;
-
-  if (shopIdsOrSlugs) {
-    // Get all shopIds associated with the slug or Id
-    const shopIds = Shops.find({
-      "workflow.status": "active",
-      "$or": [{
-        _id: { $in: shopIdsOrSlugs }
-      }, {
-        slug: { $in: shopIdsOrSlugs }
-      }]
-    }).map((shop) => shop._id);
-
-    // If we found shops, update the productFilters
-    if (shopIds) {
-      catalogFilters.shopIds = shopIds;
-    } else {
-      return false;
-    }
-  }
-
   // Init default selector - Everyone can see products that fit this selector
-  const selector = {
+  const baseSelector = {
     "product.isDeleted": { $ne: true }, // by default, we don't publish deleted products
     "product.isVisible": true // by default, only lookup visible products
   };
 
-  if (!catalogFilters) return selector;
+  const { shopIdsOrSlugs } = catalogFilters || {};
+  const selector = applyShopsFilter(baseSelector, shopIdsOrSlugs);
 
-  // handle multiple shops
-  if (catalogFilters.shopIds) {
-    selector.shopId = {
-      $in: catalogFilters.shopIds
-    };
-  }
+  if (!selector) { return false; }
+
+  if (!catalogFilters) { return selector; }
 
   // filter by tags
   if (catalogFilters.tagIds) {
@@ -616,6 +593,7 @@ Meteor.publish("Products/grid", function (productScrollLimit = 24, productFilter
   check(productFilters, Match.OneOf(undefined, Object));
 
   const newSelector = filterCatalogItems(productFilters);
+
 
   if (newSelector === false) {
     return this.ready();

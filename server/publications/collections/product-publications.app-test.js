@@ -34,6 +34,7 @@ describe("Publication", function () {
     merchantShopId = Random.id();
     primaryShopId = Random.id();
 
+
     sandbox = sinon.sandbox.create();
     sandbox.stub(RevisionApi, "isRevisionControlEnabled", () => true);
     sandbox.stub(Reaction, "getPrimaryShopId", () => primaryShopId);
@@ -360,7 +361,8 @@ describe("Publication", function () {
           sandbox.stub(Reaction, "getShopId", () => shopId);
 
           collector.collect("Products/grid", (collections) => {
-            const productIds = collections.Catalog.map((p) => p._id);
+            const productIds =
+              collections.Catalog.map((c) => c.product._id);
 
             expect(productIds).to.have.members(merchantShop1VisibleProductIds);
           }).then(() => done(/* empty */), done);
@@ -370,19 +372,21 @@ describe("Publication", function () {
           sandbox.stub(Reaction, "getShopId", () => primaryShopId);
 
           collector.collect("Products/grid", (collections) => {
-            const productIds = collections.Catalog.map((p) => p._id);
+            const productIds =
+              collections.Catalog.map((c) => c.product._id);
 
             expect(productIds).to.have.members(activeShopVisibleProductIds);
           }).then(() => done(/* empty */), done);
         });
 
         it("returns products from all shops when the Primary Shop is active, filtered by shop id", function (done) {
-          const filters = { shops: [shopId, merchantShopId] };
+          const filters = { shopIdsOrSlugs: [shopId, merchantShopId] };
 
           sandbox.stub(Reaction, "getShopId", () => primaryShopId);
 
           collector.collect("Products/grid", 24, filters, (collections) => {
-            const productIds = collections.Catalog.map((p) => p._id);
+            const productIds =
+              collections.Catalog.map((c) => c.product._id);
 
             expect(productIds).to.have.members(activeMerchantProductIds);
           }).then(() => done(/* empty */), done);
@@ -390,10 +394,16 @@ describe("Publication", function () {
       });
 
       function publishProductsToCatalog() {
+        // TODO: use a more official way of inserting products into the Catalog
         Collections.Products
           .find({})
           .fetch()
-          .forEach((product) => Collections.Catalog.insert(product));
+          .forEach((product) => {
+            Collections.Catalog.insert({
+              product,
+              shopId: product.shopId
+            });
+          });
       }
     });
 
