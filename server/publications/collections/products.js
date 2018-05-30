@@ -208,7 +208,7 @@ function filterProducts(productFilters) {
   try {
     if (productFilters) filters.validate(productFilters);
   } catch (e) {
-    Logger.debug(e, "Invalid Product Filters");
+    Logger.warn(e, "Invalid Product Filters");
     return false;
   }
 
@@ -536,7 +536,7 @@ function filterCatalogItems(catalogFilters) {
   try {
     if (catalogFilters) catalogProductFiltersSchema.validate(catalogFilters);
   } catch (e) {
-    Logger.debug(e, "Invalid Catalog Product Filters");
+    Logger.warn(e, "Invalid Catalog Product Filters");
     return false;
   }
 
